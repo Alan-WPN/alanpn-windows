@@ -1,0 +1,37 @@
+name: Windows unsigned build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Fetch verified upstream payloads
+        run: python scripts/fetch_payload.py
+      - name: Fetch build tool and license notices
+        run: python scripts/fetch_build_tools.py
+      - name: Build unsigned Windows packages
+        shell: pwsh
+        run: ./scripts/build-local-setup.ps1 -Production
+      - name: Unit tests (no VPN or installation)
+        run: go test ./...
+      - name: Static checks
+        run: go vet ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alanpn-windows-unsigned
+          path: |
+            build/prod/AlanPN-Connect-Template.exe
+            build/prod/AlanPN-Windows-Setup.exe
+            vendor-assets/provenance.json
+          if-no-files-found: error
