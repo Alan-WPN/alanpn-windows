@@ -1,0 +1,6 @@
+/build/
+/vendor-assets/
+/cmd/bootstrap/payload/
+/cmd/bootstrap/rsrc_windows_amd64.syso
+*.log
+*.local.json
