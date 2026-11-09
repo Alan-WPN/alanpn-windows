@@ -2,6 +2,16 @@ Unicode True
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 Name "AlanPN Windows - local prototype"
+!ifndef APP_VERSION
+!define APP_VERSION "0.1.0.0"
+!endif
+VIProductVersion "${APP_VERSION}"
+VIAddVersionKey /LANG=1033 "ProductName" "AlanPN"
+VIAddVersionKey /LANG=1033 "CompanyName" "AlanPN contributors"
+VIAddVersionKey /LANG=1033 "FileDescription" "AlanPN Windows installer"
+VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 AlanPN contributors"
 !ifndef BUILD_DIR
 !define BUILD_DIR "..\build"
 !endif

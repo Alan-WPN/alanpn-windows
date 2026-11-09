@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -158,6 +159,7 @@ func (p *Process) Start(_ context.Context, config []byte) error {
 	p.cmd = cmd
 	p.done = done
 	p.diagnostic = ""
+	p.failureDetail = ""
 	p.stopping = false
 	p.job = job
 	p.mu.Unlock()
@@ -241,7 +243,13 @@ func waitAdapterRemoved() error {
 	}
 }
 func (p *Process) Ready(ctx context.Context) bool {
-	setReason := func(code string) bool { p.mu.Lock(); p.diagnostic = code; p.mu.Unlock(); return false }
+	setReason := func(code string) bool {
+		p.mu.Lock()
+		p.diagnostic = code
+		p.failureDetail = "Readiness check: " + code
+		p.mu.Unlock()
+		return false
+	}
 	iface, err := net.InterfaceByName(AdapterName)
 	if err != nil {
 		return setReason("tun_interface_missing")
@@ -273,17 +281,54 @@ func (p *Process) Ready(ctx context.Context) bool {
 	req, _ := http.NewRequestWithContext(probeCtx, "GET", "https://1.1.1.1/cdn-cgi/trace", nil)
 	response, err := client.Do(req)
 	if err != nil {
-		return setReason("tunnel_probe_failed")
+		p.mu.Lock()
+		p.diagnostic = "tunnel_probe_failed"
+		p.failureDetail = "TUN HTTPS probe: " + safeProbeFailure(err)
+		p.mu.Unlock()
+		return false
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8192))
 	if response.StatusCode != 200 {
-		return setReason("tunnel_probe_failed")
+		p.mu.Lock()
+		p.diagnostic = "tunnel_probe_failed"
+		p.failureDetail = fmt.Sprintf("TUN HTTPS probe: HTTP %d", response.StatusCode)
+		p.mu.Unlock()
+		return false
 	}
 	p.mu.Lock()
 	p.diagnostic = ""
+	p.failureDetail = ""
 	p.mu.Unlock()
 	return true
+}
+
+// Export categories only; net/url errors can contain private targets.
+func safeProbeFailure(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return "TLS trust failure"
+	}
+	var certificate x509.CertificateInvalidError
+	if errors.As(err, &certificate) {
+		return "invalid TLS certificate"
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return "TLS hostname mismatch"
+	}
+	var network net.Error
+	if errors.As(err, &network) && network.Timeout() {
+		return "timeout"
+	}
+	var number syscall.Errno
+	if errors.As(err, &number) {
+		return fmt.Sprintf("socket error %d", number)
+	}
+	return "transport failure"
 }
 
 func (p *Process) ClientReady(ctx context.Context) bool {

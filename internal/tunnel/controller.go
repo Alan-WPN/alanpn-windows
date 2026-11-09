@@ -47,8 +47,8 @@ func (c *Controller) Lease(ttl time.Duration, now time.Time) {
 	if ttl < 0 {
 		ttl = 0
 	}
-	if ttl > 30*time.Second {
-		ttl = 30 * time.Second
+	if ttl > 5*time.Minute {
+		ttl = 5 * time.Minute
 	}
 	c.deadline = now.Add(ttl)
 }
@@ -57,7 +57,7 @@ func (c *Controller) Connect(ctx context.Context, seq uint64, id, link string, n
 		return nil
 	}
 	if !now.Before(c.deadline) {
-		return errors.New("page lease expired")
+		return errors.New("device authorization expired")
 	}
 	profile, err := BuildConfig(link)
 	if err != nil {

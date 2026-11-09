@@ -1,6 +1,6 @@
 # Code signing policy
 
-Status: preparing an application to SignPath Foundation; not yet approved. Current builds are unsigned. No certificate or Foundation sponsorship is claimed.
+Status: the initial SignPath Foundation application was declined because the project has not yet established the required public visibility. Current builds are unsigned. No certificate or Foundation sponsorship is claimed.
 
 Maintainer, author/reviewer and proposed release approver: [Alan-WPN](https://github.com/Alan-WPN). Contact: support@alanpn.ru. MFA is required for repository and signing access. Each release-signing request must be manually approved.
 

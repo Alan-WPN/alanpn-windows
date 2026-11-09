@@ -53,7 +53,7 @@ func TestPairAndSyncOverTLS(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("x", 64) || r.Header.Get("X-AlanPN-Device") != "test-device" {
 			t.Error("device authentication missing")
 		}
-		_ = json.NewEncoder(w).Encode(SyncResponse{LeaseRemainingMS: 60000, Command: &Command{Sequence: 1, Action: "disconnect"}})
+		_ = json.NewEncoder(w).Encode(SyncResponse{LeaseRemainingMS: 600000, Command: &Command{Sequence: 1, Action: "disconnect"}})
 	}))
 	defer server.Close()
 	client, e := New(server.URL)
@@ -68,7 +68,7 @@ func TestPairAndSyncOverTLS(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if requests != 2 || response.LeaseRemainingMS != 30000 || response.Command.Sequence != 1 {
+	if requests != 2 || response.LeaseRemainingMS != 300000 || response.Command.Sequence != 1 {
 		t.Fatal("invalid sync/lease bound")
 	}
 }

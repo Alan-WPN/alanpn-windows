@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"alanpn/windows/internal/agent"
@@ -20,6 +22,7 @@ import (
 	"alanpn/windows/internal/tunnel"
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -32,12 +35,18 @@ type config struct {
 	OwnerSID   string `json:"ownerSID"`
 }
 type localCommand struct {
-	Action string `json:"action"`
-	Ticket string `json:"ticket,omitempty"`
+	LaunchID string `json:"launchId,omitempty"`
+	Action   string `json:"action"`
+	Ticket   string `json:"ticket,omitempty"`
+	Present  bool   `json:"present,omitempty"`
 }
 type request struct {
 	command localCommand
-	reply   chan bool
+	reply   chan localReply
+}
+type localReply struct {
+	OK       bool   `json:"ok"`
+	LaunchID string `json:"launchId,omitempty"`
 }
 type service struct {
 	directory, data string
@@ -73,6 +82,12 @@ func main() {
 	}
 	if arg == "--cleanup" {
 		if emergencyCleanup() != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if arg == "--network-test" {
+		if networkTest() != nil {
 			os.Exit(1)
 		}
 		return
@@ -115,6 +130,10 @@ func main() {
 		}
 		return
 	}
+	if arg == "--diagnose" {
+		fmt.Printf("AlanPN Windows prototype; VM eligible: %v\n", virtualMachine())
+		return
+	}
 	if arg == "--validate" {
 		b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4*1024*1024+1))
 		_, e := tunnel.VLESSFromFeed(b)
@@ -146,7 +165,13 @@ func main() {
 		return
 	}
 	cmd := localCommand{Action: "disconnect"}
-	if arg == "--diagnostics" {
+	if agent.IsOpenURI(arg) {
+		if startTray() != nil {
+			os.Exit(1)
+		}
+		cmd.Action = "wake"
+		cmd.LaunchID = agent.OpenLaunchID(arg)
+	} else if arg == "--diagnostics" {
 		cmd.Action = "diagnostics"
 	} else if arg != "--disconnect" {
 		ticket, e := agent.PairTicketFromURI(arg)
@@ -185,10 +210,25 @@ func main() {
 	}
 	if cmd.Action == "pair" {
 		handlerReport("paired")
+		_ = startTray()
 	}
 	if cmd.Action == "diagnostics" {
 		fmt.Println(result.Detail)
 	}
+}
+
+// Called by the interactive protocol handler, never by the SYSTEM service.
+func startTray() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "alanpn-tray.exe"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 func handlerReport(code string) {
 	// Diagnostic codes only: no URI, ticket, credentials or subscription data.
@@ -202,6 +242,21 @@ func handlerReport(code string) {
 func validSID(s string) bool {
 	_, e := windows.StringToSid(s)
 	return e == nil && strings.HasPrefix(s, "S-1-5-21-")
+}
+func virtualMachine() bool {
+	k, e := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DESCRIPTION\System\BIOS`, registry.QUERY_VALUE)
+	if e != nil {
+		return false
+	}
+	defer k.Close()
+	model, _, _ := k.GetStringValue("SystemProductName")
+	model = strings.ToLower(model)
+	for _, s := range []string{"virtual machine", "virtualbox", "vmware", "kvm", "qemu"} {
+		if strings.Contains(model, s) {
+			return true
+		}
+	}
+	return false
 }
 func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending}
@@ -249,18 +304,25 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 					_ = json.NewEncoder(conn).Encode(map[string]any{"ok": true, "detail": engine.SafeFailureDetail()})
 					return
 				}
-				if cmd.Action != "pair" && cmd.Action != "disconnect" {
+				if cmd.Action == "capabilities" {
+					_ = json.NewEncoder(conn).Encode(map[string]any{"ok": true, "lifecycleProtocol": 3, "origin": s.cfg.Origin})
 					return
 				}
-				req := request{command: cmd, reply: make(chan bool, 1)}
+				if cmd.Action != "pair" && cmd.Action != "disconnect" && cmd.Action != "presence" && cmd.Action != "wake" {
+					return
+				}
+				if cmd.LaunchID != "" && !agent.ValidLaunchID(cmd.LaunchID) {
+					return
+				}
+				req := request{command: cmd, reply: make(chan localReply, 1)}
 				select {
 				case commands <- req:
 				case <-ctx.Done():
 					return
 				}
 				select {
-				case ok := <-req.reply:
-					_ = json.NewEncoder(conn).Encode(map[string]bool{"ok": ok})
+				case reply := <-req.reply:
+					_ = json.NewEncoder(conn).Encode(reply)
 				case <-ctx.Done():
 					return
 				}
@@ -273,6 +335,8 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 	next := time.Now()
 	var seq uint64
 	var emergency bool
+	var traySeen time.Time
+	var trayLaunchID, pendingLaunchID string
 	// Network work must not block the local lease deadline or emergency pipe.
 	type exchange struct {
 		out        agent.SyncResponse
@@ -302,6 +366,25 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 			}
 			return false, 0
 		case req := <-commands:
+			if req.command.Action == "presence" || req.command.Action == "wake" {
+				if req.command.Action == "wake" && req.command.LaunchID != "" {
+					pendingLaunchID = req.command.LaunchID
+				}
+				if req.command.Action == "presence" {
+					if req.command.Present {
+						traySeen = time.Now()
+						if req.command.LaunchID != "" && req.command.LaunchID == pendingLaunchID {
+							trayLaunchID = pendingLaunchID
+						}
+					} else {
+						traySeen = time.Time{}
+						trayLaunchID = ""
+					}
+				}
+				next = time.Now()
+				req.reply <- localReply{OK: true, LaunchID: pendingLaunchID}
+				continue
+			}
 			generation++
 			if stopExchange != nil {
 				stopExchange()
@@ -325,7 +408,7 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 				}
 			}
 			next = time.Now()
-			req.reply <- err == nil
+			req.reply <- localReply{OK: err == nil}
 		case now := <-tick.C:
 			_ = ctl.Tick(ctx, now)
 			if inFlight || now.Before(next) || client.Credentials.Token == "" {
@@ -339,7 +422,7 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 			requestCtx, cancelRequest := context.WithTimeout(ctx, 11*time.Second)
 			stopExchange = cancelRequest
 			copyClient := *client
-			report := agent.SyncRequest{State: string(ctl.State), SubscriptionID: ctl.SubscriptionID, LastSequence: seq, ErrorCode: ctl.LastError}
+			report := agent.SyncRequest{State: string(ctl.State), SubscriptionID: ctl.SubscriptionID, LastSequence: seq, ErrorCode: ctl.LastError, TrayRunning: !traySeen.IsZero() && time.Since(traySeen) < 12*time.Second, TrayLaunchID: trayLaunchID}
 			currentGeneration := generation
 			stopRemote := emergency
 			go func() {
@@ -374,6 +457,11 @@ func (s *service) Execute(_ []string, changes <-chan svc.ChangeRequest, status c
 			}
 			out, err := result.out, result.err
 			if err != nil {
+				if errors.Is(err, agent.ErrAuthorizationDenied) {
+					_ = ctl.Disconnect()
+					ctl.LastError = "device_authorization_denied"
+					continue
+				}
 				if out.Command != nil && out.Command.Sequence > seq {
 					seq = out.Command.Sequence
 					// A failed switch must not report the previous tunnel as the new subscription.

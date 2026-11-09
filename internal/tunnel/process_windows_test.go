@@ -5,10 +5,14 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"errors"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -32,6 +36,23 @@ func TestBundledXrayAcceptsGeneratedConfigWithoutStartingTunnel(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Bundled Xray config validation failed: %v\n%s", err, output)
+	}
+}
+
+func TestProbeFailureNeverExportsTargetOrRawError(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{context.DeadlineExceeded, "timeout"},
+		{x509.UnknownAuthorityError{}, "TLS trust failure"},
+		{syscall.Errno(10051), "socket error 10051"},
+		{errors.New("secret UUID and private subscription URL"), "transport failure"},
+	} {
+		err := &url.Error{Op: "Get", URL: "https://private.example/secret", Err: tc.cause}
+		if actual := safeProbeFailure(err); actual != tc.want {
+			t.Fatalf("wrong safe error category: %q", actual)
+		}
 	}
 }
 

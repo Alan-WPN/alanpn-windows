@@ -16,6 +16,9 @@ type Credentials struct {
 	DeviceID string `json:"deviceId"`
 	Token    string `json:"token"`
 }
+
+var ErrAuthorizationDenied = errors.New("device authorization denied")
+
 type Command struct {
 	Sequence        uint64 `json:"sequence"`
 	Action          string `json:"action"`
@@ -24,6 +27,8 @@ type Command struct {
 	SubscriptionURL string `json:"subscriptionUrl,omitempty"`
 }
 type SyncRequest struct {
+	TrayLaunchID   string `json:"trayLaunchId,omitempty"`
+	TrayRunning    bool   `json:"trayRunning"`
 	State          string `json:"state"`
 	SubscriptionID string `json:"subscriptionId,omitempty"`
 	LastSequence   uint64 `json:"lastSequence"`
@@ -37,6 +42,44 @@ type Client struct {
 	Origin      string
 	Credentials Credentials
 	HTTP        *http.Client
+}
+
+// Opening the installed tray carries no account or VPN configuration.
+func IsOpenURI(address string) bool {
+	u, err := url.Parse(address)
+	if err != nil || !strings.EqualFold(u.Scheme, "alanpn") || !strings.EqualFold(u.Host, "open") || u.User != nil || u.Opaque != "" || (u.Path != "" && u.Path != "/") || u.Fragment != "" {
+		return false
+	}
+	if u.RawQuery == "" {
+		return !u.ForceQuery
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	return err == nil && len(q) == 1 && len(q["launch"]) == 1 && ValidLaunchID(q.Get("launch"))
+}
+
+// A correlation value only, never credentials or configuration.
+func ValidLaunchID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i, c := range id {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func OpenLaunchID(address string) string {
+	if !IsOpenURI(address) {
+		return ""
+	}
+	u, _ := url.Parse(address)
+	return u.Query().Get("launch")
 }
 
 // ShellExecute may normalize a hierarchical custom protocol to include '/'.
@@ -87,6 +130,9 @@ func (c *Client) post(ctx context.Context, path string, body, output any) error 
 		return errors.New("control network unavailable")
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		return ErrAuthorizationDenied
+	}
 	if res.StatusCode != 200 && res.StatusCode != 201 {
 		return errors.New("control request rejected")
 	}
@@ -122,8 +168,8 @@ func (c *Client) Sync(ctx context.Context, status SyncRequest) (SyncResponse, er
 	if out.LeaseRemainingMS < 0 {
 		out.LeaseRemainingMS = 0
 	}
-	if out.LeaseRemainingMS > 30000 {
-		out.LeaseRemainingMS = 30000
+	if out.LeaseRemainingMS > 300000 {
+		out.LeaseRemainingMS = 300000
 	}
 	return out, e
 }

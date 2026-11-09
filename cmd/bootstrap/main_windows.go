@@ -107,7 +107,7 @@ func main() {
 	available, paired := false, false
 	root, rootErr := windows.KnownFolderPath(windows.FOLDERID_ProgramFilesX64, 0)
 	if rootErr == nil {
-		if info, statErr := os.Stat(filepath.Join(root, "AlanPN", "alanpn-tray.exe")); statErr == nil && info.Mode().IsRegular() {
+		if info, statErr := os.Stat(filepath.Join(root, "AlanPN", "alanpn-tray.exe")); statErr == nil && info.Mode().IsRegular() && supportsLifecycle(ctx) {
 			available, paired = pair(ctx, cfg.Ticket)
 		}
 	}
@@ -195,6 +195,29 @@ func startTray() {
 	if cmd.Start() == nil {
 		_ = cmd.Process.Release()
 	}
+}
+
+func supportsLifecycle(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := winio.DialPipeContext(ctx, `\\.\pipe\AlanPNClient.v1`)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	if !trustedServicePeer(conn) {
+		return false
+	}
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if json.NewEncoder(conn).Encode(map[string]string{"action": "capabilities"}) != nil {
+		return false
+	}
+	var reply struct {
+		OK       bool   `json:"ok"`
+		Protocol int    `json:"lifecycleProtocol"`
+		Origin   string `json:"origin"`
+	}
+	return json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&reply) == nil && reply.OK && reply.Protocol >= 3 && reply.Origin == setupconfig.Origin
 }
 
 func pair(ctx context.Context, ticket string) (available, paired bool) {

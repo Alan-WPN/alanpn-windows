@@ -63,10 +63,12 @@ func BuildConfig(link string) ([]byte, error) {
 	}
 	config := map[string]any{
 		"log": map[string]any{"loglevel": "none"},
-		// Resolve the GeoDNS hostname in Xray itself. Windows' DNS Client is
-		// intentionally blocked outside TUN and cannot bootstrap the tunnel.
+		// Bootstrap the GeoDNS name independently of Windows DNS, which may
+		// already point at this TUN and is blocked before the guard opens it.
+		// The IP-literal local DoH resolver uses Xray's physical-interface
+		// socket binding; it does not dial the not-yet-established VPN.
 		"dns": map[string]any{"tag": "alanpn-resolver", "queryStrategy": "UseIPv4", "disableFallbackIfMatch": true, "servers": []any{
-			map[string]any{"address": "localhost", "domains": []string{"full:" + u.Hostname()}, "skipFallback": true},
+			map[string]any{"address": "https+local://1.1.1.1/dns-query", "domains": []string{"full:" + u.Hostname()}, "skipFallback": true},
 			map[string]any{"address": "1.1.1.1"},
 		}},
 		"routing": map[string]any{"rules": []any{

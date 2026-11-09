@@ -124,7 +124,7 @@ func TestProfilePreservesEndpointAndWS(t *testing.T) {
 	}
 	servers := dns["servers"].([]any)
 	bootstrap := servers[0].(map[string]any)
-	if bootstrap["address"] != "localhost" || bootstrap["skipFallback"] != true || bootstrap["domains"].([]any)[0] != "full:awpn.alanpn.ru" {
+	if bootstrap["address"] != "https+local://1.1.1.1/dns-query" || bootstrap["skipFallback"] != true || bootstrap["domains"].([]any)[0] != "full:awpn.alanpn.ru" {
 		t.Fatal("Only the VPN endpoint may use bootstrap DNS")
 	}
 	if servers[1].(map[string]any)["address"] != "1.1.1.1" {
